@@ -951,7 +951,7 @@ def _preprocess_for_mt(raw_text: str) -> Tuple[str, List[str], str, str, str]:
         leading_color = c_tag
         text = sp_match.group(4).strip()
     else:
-        c_match = re.match(r"^(\[COLOR:[0-9A-Fa-f]{2}\])\s*(.*)$", text, re.DOTALL)
+        c_match = re.match(r"^((?:\[(?:COLOR|EXT):[0-9A-Fa-f:]+\])+)\s*(.*)$", text, re.DOTALL)
         if c_match:
             leading_color = c_match.group(1)
             text = c_match.group(2).strip()
@@ -1152,6 +1152,24 @@ def auto_translate_dialogue(text: str) -> Optional[str]:
 
     raw_text = text.strip()
 
+    # Handle multi-column Move Tutor / Game Corner strings: e.g. 'Water Pulse[EXT:13:5A][EXT:06:00]4 Green Shards'
+    col_match = re.match(r"^([^[]+)(\[EXT:13:[0-9A-Fa-f]{2}\](?:\[EXT:[^\]]+\])*)\s*(.+)$", raw_text)
+    if col_match and "\n" not in raw_text:
+        left_part = col_match.group(1).strip()
+        mid_tags = col_match.group(2)
+        right_part = col_match.group(3).strip()
+        left_norm = normalize_key(left_part)
+        left_jp = NORMALIZED_MOVES.get(left_norm) or NORMALIZED_SPECIES.get(left_norm) or NORMALIZED_ITEMS.get(left_norm) or left_part
+        shard_m = re.match(r"^(\d+)\s+(Red|Blue|Yellow|Green)\s+Shards?$", right_part, re.I)
+        coin_m = re.match(r"^([\d,]+)\s+Coins?$", right_part, re.I)
+        if shard_m:
+            s_num = shard_m.group(1)
+            s_col = {"red": "あか", "blue": "あお", "yellow": "きいろ", "green": "みどり"}[shard_m.group(2).lower()]
+            return f"{left_jp}{mid_tags}{s_col}のかけら{s_num}こ"
+        elif coin_m:
+            c_num = coin_m.group(1).replace(",", "")
+            return f"{left_jp}{mid_tags}{c_num}まい"
+
     speaker_prefix = ""
     dialogue_body = raw_text
 
@@ -1274,7 +1292,13 @@ def auto_translate_text(
     if dial_fallback:
         return hiragana_to_katakana(dial_fallback) if convert_to_kana else dial_fallback
 
-    # 5. Online Machine Translation for Dialogues, Descriptions, and Custom Text
+    # 5. Persistent Local MT Cache & Online Machine Translation
+    if raw_text in _TRANSLATION_CACHE:
+        cached = _TRANSLATION_CACHE[raw_text]
+        if "\nを" not in cached and "\nの" not in cached and "\nに" not in cached:
+            kana_res = convert_kanji_to_kana(_sanitize_cached_translation(cached))
+            return hiragana_to_katakana(kana_res) if convert_to_kana else kana_res
+
     if allow_online:
         online_res = translate_online(raw_text)
         if online_res:

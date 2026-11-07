@@ -5,8 +5,8 @@ __pycache__/
 *.pyo
 *.pyd
 
-translated_output/
-sample_data/*
+sample_data/
+!sample_data/.gitkeep
 
 # pipでインストールされるパッケージ
 venv/

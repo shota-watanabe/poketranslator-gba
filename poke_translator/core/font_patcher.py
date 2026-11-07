@@ -31,7 +31,7 @@ FIRERED_FONT_CONFIGS = [
         "default_width": 8,
         "jp_gfx_offset": 0x1FB300,
         "jp_width_offset": None,
-        "jp_glyph_size": 64,
+        "jp_glyph_size": 32,
     },
     {
         "name": "Black Dialogue Font",
@@ -85,7 +85,7 @@ EMERALD_FONT_CONFIGS = [
         "default_width": 8,
         "jp_gfx_offset": 0x6584E4,
         "jp_width_offset": None,
-        "jp_glyph_size": 64,
+        "jp_glyph_size": 32,
     },
     {
         "name": "Emerald Font 2 (Small 2)",
@@ -115,7 +115,7 @@ EMERALD_FONT_CONFIGS = [
         "default_width": 8,
         "jp_gfx_offset": 0x6584E4,
         "jp_width_offset": None,
-        "jp_glyph_size": 64,
+        "jp_glyph_size": 32,
     },
 ]
 
@@ -249,6 +249,18 @@ def encode_tile_row(pixels: List[int]) -> bytes:
     return bytes([b0, b1])
 
 
+def _fill_bg_pixels(tile_bytes: bytes, start_row: int, end_row: int) -> bytes:
+    """Converts 2bpp pixel value 0 (0b00) to 3 (0b11, background fill) in rows start_row..end_row-1."""
+    out = bytearray(tile_bytes)
+    for r in range(start_row, min(end_row, len(out) // 2)):
+        for idx in (r * 2, r * 2 + 1):
+            b = out[idx]
+            any_bit = ((b >> 1) | b) & 0x55
+            zero_mask = (~(any_bit | (any_bit << 1))) & 0xFF
+            out[idx] = b | zero_mask
+    return bytes(out)
+
+
 def extract_official_jp_glyph(
     rom_data: bytes,
     jp_gfx_offset: int,
@@ -260,17 +272,23 @@ def extract_official_jp_glyph(
     and converts it to linear Latin font table tile order ([Top, Bot] or [TL, TR, BL, BR]).
     """
     if jp_glyph_size == 32:
-        # 16 glyphs per row sheet
+        # 16 glyphs per row sheet (8x16 glyphs)
         off = jp_gfx_offset + (src_gid >> 4) * 512 + (src_gid & 15) * 16
         t_top = bytes(rom_data[off : off + 16])
         t_bot = bytes(rom_data[off + 256 : off + 272])
         if dst_glyph_size == 32:
+            # Small font: fill background (0 -> 3) in rows 1..7 of top tile and rows 0..5 of bottom tile
+            t_top = _fill_bg_pixels(t_top, 1, 8)
+            t_bot = _fill_bg_pixels(t_bot, 0, 5)
             return t_top + t_bot
         else:
+            # Standard 64B font: fill background (0 -> 3) in rows 0..7 of top tile and rows 0..6 of bottom tile
+            t_top = _fill_bg_pixels(t_top, 0, 8)
+            t_bot = _fill_bg_pixels(t_bot, 0, 6)
             empty = bytes(16)
             return t_top + empty + t_bot + empty
     else:
-        # 8 glyphs per row sheet (64-byte 16x16 glyphs)
+        # 8 glyphs per row sheet (64-byte 16x16 glyphs, already has background=3 in cols 0..9)
         off = jp_gfx_offset + (src_gid >> 3) * 512 + (src_gid & 7) * 32
         t_tl = bytes(rom_data[off : off + 16])
         t_tr = bytes(rom_data[off + 16 : off + 32])
@@ -335,13 +353,108 @@ def pattern_to_2bpp_glyph(pattern: List[int], glyph_size: int = 64) -> bytes:
         return bytes(tile_top + empty_tile + tile_bot + empty_tile)
 
 
+# Byte signatures of Official Nintendo Japanese font sheets (glyph 1 "あ")
+_JP_MALE_64_SIG = b"\xff\xff\xff\xff\xbf\xfdU\xd5\xaa\xe9V\xf5\x99\xd9ji\x00\xf0\x00\xf0\x00\xf0\x00\xb0\x00\xb0\x00\xf0\x00\xb0\x00`"
+_JP_SMALL_32_SIG = b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x06XU\xa8\xa6X\x15\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x18`&`\x06`"
+_JP_NORM_32_FR_SIG = b"\x00\x00\x00\x06XU\xa8\xa6\x18\x06X\x15\x96fff\x00\x00\x00\x00\x00`\x18`&`\x06`\x06`\x06`"
+_JP_NORM_32_EM_SIG = b"\x00\x00\x00\x00\x00\x00\x00\x06XU\xa8\xa6\x18\x06X\x15\x00\x00\x00\x00\x00\x00\x00\x00\x00`\x18`&`\x06`"
+
+
+def discover_font_configs(rom: GbaRom) -> List[Dict]:
+    """Dynamically discovers all Latin font tables and built-in Official Japanese font sheets
+    in any GBA Pokemon ROM (Vanilla FireRed/Emerald, CFRU, pokeemerald, pokefirered).
+    """
+    data = bytes(rom.original_data)
+    data_len = len(data)
+
+    # 1. Locate built-in Official Japanese font sheets by signature
+    idx_male64 = data.find(_JP_MALE_64_SIG)
+    jp_male_64 = (idx_male64 - 32) if idx_male64 >= 32 else None
+
+    idx_small32 = data.find(_JP_SMALL_32_SIG)
+    jp_small_32 = (idx_small32 - 16) if idx_small32 >= 16 else None
+
+    idx_norm32 = data.find(_JP_NORM_32_FR_SIG)
+    if idx_norm32 == -1:
+        idx_norm32 = data.find(_JP_NORM_32_EM_SIG)
+    jp_norm_32 = (idx_norm32 - 16) if idx_norm32 >= 16 else jp_small_32
+
+    jp_sheet_offsets = {off for off in (jp_male_64, jp_small_32, jp_norm_32, 0x207500, 0x217818, 0x227B30, 0x66C8E4, 0x5E3178, 0x5EB378, 0x5F3578) if off is not None}
+
+    # 2. Start with static configs whose offsets actually match valid width tables in this ROM
+    base_configs = FIRERED_FONT_CONFIGS if rom.is_firered() else EMERALD_FONT_CONFIGS
+    configs_by_gfx: Dict[int, Dict] = {}
+
+    for cfg in base_configs:
+        g_off = cfg["gfx_offset"]
+        w_off = cfg["width_offset"]
+        if w_off + 256 <= data_len:
+            w_tbl = data[w_off : w_off + 256]
+            if all(0 <= b <= 16 for b in w_tbl) and all(3 <= w_tbl[c] <= 10 for c in range(0xBB, 0xD5)):
+                configs_by_gfx[g_off] = dict(cfg)
+
+    # 3. Dynamically scan code literal pools (0x000000..0x350000) for (gfx_offset, width_offset) pairs
+    max_code = min(data_len - 12, 0x350000)
+    for p_off in range(0, max_code, 4):
+        v1 = int.from_bytes(data[p_off : p_off + 4], "little") - 0x08000000
+        if not (0x100000 <= v1 < data_len - 0x4000) or v1 in jp_sheet_offsets or v1 in configs_by_gfx:
+            continue
+        for delta in (4, 8):
+            v2 = int.from_bytes(data[p_off + delta : p_off + delta + 4], "little") - 0x08000000
+            if v2 in (v1 + 0x8000, v1 + 0x4000, v1 - 0x200) and 0x100000 <= v2 < data_len - 256:
+                w_tbl = data[v2 : v2 + 256]
+                if all(0 <= b <= 16 for b in w_tbl) and all(3 <= w_tbl[c] <= 10 for c in range(0xBB, 0xD5)):
+                    gsz = 32 if (v2 == v1 + 0x4000) else 64
+                    # Determine whether this is a Small, Narrow UI, or Main Dialogue font
+                    row0_bytes = data[v1 + 0xBB * gsz : v1 + 0xBB * gsz + 2]
+                    if gsz == 32 or row0_bytes == b"\x00\x00":
+                        jp_src = jp_small_32 or jp_norm_32
+                        jp_gsz = 32
+                        def_w = 8
+                        jp_w_off = None
+                    elif row0_bytes == b"\xC0\xFF" and jp_norm_32 is not None:
+                        jp_src = jp_norm_32
+                        jp_gsz = 32
+                        def_w = 8
+                        jp_w_off = None
+                    elif jp_male_64 is not None:
+                        jp_src = jp_male_64
+                        jp_gsz = 64
+                        def_w = 10
+                        # Check if jp_male_64 has a width table at +0x8000 or -0x200
+                        jp_w_off = None
+                        for cand_w in (jp_male_64 + 0x8000, jp_male_64 - 0x200):
+                            if 0 <= cand_w <= data_len - 256 and all(4 <= data[cand_w + c] <= 12 for c in range(1, 0x50)):
+                                jp_w_off = cand_w
+                                break
+                    else:
+                        jp_src = jp_norm_32
+                        jp_gsz = 32
+                        def_w = 8
+                        jp_w_off = None
+
+                    configs_by_gfx[v1] = {
+                        "name": f"Discovered Font @ 0x{v1:X}",
+                        "gfx_offset": v1,
+                        "width_offset": v2,
+                        "glyph_size": gsz,
+                        "default_width": def_w,
+                        "jp_gfx_offset": jp_src,
+                        "jp_width_offset": jp_w_off,
+                        "jp_glyph_size": jp_gsz,
+                    }
+                    break
+
+    return list(configs_by_gfx.values()) if configs_by_gfx else list(base_configs)
+
+
 def patch_kana_font(rom: GbaRom, char_width: int = 9) -> Dict[str, int]:
     """Injects Japanese Hiragana, Katakana, and punctuation glyphs and updates character width tables.
     
     Uses the ROM's built-in Official Nintendo Japanese font sheets when available,
     falling back to hardware-accurate generated 2bpp glyphs on blank test ROMs.
     """
-    configs = FIRERED_FONT_CONFIGS if rom.is_firered() else EMERALD_FONT_CONFIGS
+    configs = discover_font_configs(rom)
     patched_count = 0
 
     for cfg in configs:

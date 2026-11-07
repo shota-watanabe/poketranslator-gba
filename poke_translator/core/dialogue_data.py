@@ -190,7 +190,92 @@ DIALOGUE_PATTERNS: List[Tuple[re.Pattern, str]] = [
         re.compile(r"previously on your quest", re.I),
         "これまでの あらすじ…",
     ),
+    # --- Battle Menu & Battle UI Prompts ---
+    (
+        re.compile(r"^((?:\[EXT:[^\]]+\])*)(?:fight|battle)\[EXT:13:38\]bag\s*pok[eé]mon\[EXT:13:38\]run$", re.I),
+        r"\1たたかう[EXT:13:38]バッグ\nポケモン[EXT:13:38]にげる",
+    ),
+    (
+        re.compile(r"^((?:\[EXT:[^\]]+\])*)ball\[EXT:13:38\]bait\s*rock\[EXT:13:38\]run$", re.I),
+        r"\1ボール[EXT:13:38]エサ\nいし[EXT:13:38]にげる",
+    ),
+    (
+        re.compile(r"^((?:\[EXT:[^\]]+\])*)switch\s*which\?$", re.I),
+        r"\1どれを\nだす？",
+    ),
+    (
+        re.compile(r"^((?:\[EXT:[^\]]+\])*)yes\s*no$", re.I),
+        r"\1はい\nいいえ",
+    ),
+    (
+        re.compile(r"^what will\s*(\[[^\]]+\])\s*do\?$", re.I),
+        r"\1は\nなにを する？",
+    ),
+    (
+        re.compile(r"^what will\s*(\[[^\]]+\])\s*throw\?$", re.I),
+        r"\1は\nなにを なげる？",
+    ),
+    (
+        re.compile(r"^what will the\s*old man do\?$", re.I),
+        "おじいさんは\nなにを する？",
+    ),
+    (
+        re.compile(r"^(\[[^\]]+\]) used\s*(\[[^\]]+\])!?$", re.I),
+        r"\1の\n\2！",
+    ),
+    (
+        re.compile(r"^a critical hit!$", re.I),
+        "きゅうしょに あたった！",
+    ),
+    (
+        re.compile(r"^it[’']s a one-hit ko!$", re.I),
+        "いちげき ひっさつ！",
+    ),
+    (
+        re.compile(r"^it[’']s super effective!$", re.I),
+        "こうかは ばつぐんだ！",
+    ),
+    (
+        re.compile(r"^it[’']s not very effective[…\.]*$", re.I),
+        "こうかは いまひとつの ようだ…",
+    ),
+    (
+        re.compile(r"^((?:\[EXT:[^\]]+\])*)got away safely!(?:\[CLEAR\])?$", re.I),
+        r"\1うまく にげきれた！[CLEAR]",
+    ),
+    (
+        re.compile(r"^((?:\[EXT:[^\]]+\])*)wild (\[[^\]]+\]) fled!$", re.I),
+        r"\1やせいの \2は にげだした！",
+    ),
+    (
+        re.compile(r"^player defeated\s*(\[[^\]]+\])!(?:\[CLEAR\])?$", re.I),
+        r"\1との\nしょうぶに かった！",
+    ),
+    (
+        re.compile(r"^go!\s*(\[[^\]]+\])!$", re.I),
+        r"ゆけっ！ \1！",
+    ),
+    (
+        re.compile(r"^(\[[^\]]+\]) fainted[…\.]*(?:\[CLEAR\])?$", re.I),
+        r"\1は たおれた…[CLEAR]",
+    ),
+    (
+        re.compile(r"^what\?\s*(\[[^\]]+\]) is evolving!$", re.I),
+        r"おや…！？\n\1の ようすが…！",
+    ),
+    (
+        re.compile(r"^congratulations! your (\[[^\]]+\])\s*evolved into (\[[^\]]+\])!((?:\[EXT:[^\]]+\])*)(?:\[CLEAR\])?$", re.I),
+        r"おめでとう！ \1は\n\2に しんかした！\3[CLEAR]",
+    ),
+    (
+        re.compile(r"^huh\?\s*(\[[^\]]+\])\s*stopped evolving!(?:\[CLEAR\])?$", re.I),
+        r"あれ…？\n\1の へんかが とまった！[CLEAR]",
+    ),
     # --- Early Game Story & Celanto Town NPCs ---
+    (
+        re.compile(r"celanto library\[CLEAR\]knowledge is learned\.\s*wisdom is earned\.", re.I),
+        "ここは セラントとしょかん[CLEAR]「ちしきは まなぶもの。\nちえは みにつけるもの。」",
+    ),
     (
         re.compile(r"those running shoes should\s*help you get there faster!.*waiting\s*for you at.*reliquia ruins", re.I | re.S),
         "[COLOR:04]その ランニングシューズが あれば\nもっと はやく いけるはずよ！[CLEAR]ぐずぐず しないで！ かのじょが\nレリキアいせきで まっているわよ！",
@@ -773,6 +858,9 @@ POKEMON_GLOSSARY_REPLACEMENTS: List[Tuple[str, str]] = [
     ("彼", "かれ"),
     ("お父さん", "おとうさん"),
     ("お母さん", "おかあさん"),
+    ("何を", "なにを"),
+    ("何が", "なにが"),
+    ("何処", "どこ"),
 ]
 
 
@@ -818,6 +906,10 @@ def format_gba_dialogue(text: str, original_text: str = "", max_chars_per_line: 
     """
     if not text:
         return ""
+
+    # Preserve multi-column menu tables and palette-header battle menus ([EXT:13:], [EXT:05:], [EXT:04:]) intact
+    if any(tag in text for tag in ("[EXT:13:", "[EXT:05:", "[EXT:04:")):
+        return text
 
     # Normalize any legacy [WAIT]\n or [CLEAR]\n into [CLEAR]
     cleaned = text.replace("[WAIT]\r\n", "[CLEAR]").replace("[WAIT]\n", "[CLEAR]")

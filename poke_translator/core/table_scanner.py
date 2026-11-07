@@ -72,22 +72,47 @@ COMMON_DIALOGUE_WORDS = {
 }
 
 
+_CLEAN_ASCII_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,!?'’\"“”‘’-…():;/&\n_▲▼◀▶éÉ♀♂+%")
+
+
+def _is_known_word(w: str) -> bool:
+    if w in COMMON_DIALOGUE_WORDS:
+        return True
+    for suf in ("s", "ed", "d", "ing", "er", "ly"):
+        if w.endswith(suf) and len(w) - len(suf) >= 2 and w[: -len(suf)] in COMMON_DIALOGUE_WORDS:
+            return True
+    return False
+
+
 def is_real_english_dialogue(text: str) -> bool:
     """Accurately identifies genuine English script dialogue, rejecting binary/ARM garbage."""
-    if not text or len(text) < 8 or r"\x" in text:
+    if not text or len(text) < 6 or r"\x" in text:
         return False
     # Reject strings with binary symbol tokens that never appear in real dialogue
-    if any(tok in text for tok in ("[PK]", "[MN]", "[PO]", "[KE]", "[BL]", "[OC]", "ᵉʳ", "ª", "º")):
+    if any(tok in text for tok in ("[PK]", "[MN]", "[PO]", "[KE]", "[BL]", "[OC]", "ᵉʳ", "ª", "º", "▷")):
         return False
+    for m_sym in re.finditer(r"\[(SYM|BTN):([0-9A-Fa-f]{2})\]", text):
+        if int(m_sym.group(2), 16) > 0x15:
+            return False
+    for m_buf in re.finditer(r"\[BUF:([0-9A-Fa-f]{2})\]", text):
+        if int(m_buf.group(1), 16) > 0x35:
+            return False
     # Strip control tags and normalize é/É before checking words
     clean = re.sub(r"\[[^\]]+\]", " ", text).replace("é", "e").replace("É", "E")
-    words = re.findall(r"[a-zA-Z]{2,}", clean.lower())
-    if len(words) < 2:
+    if not all(c in _CLEAN_ASCII_CHARS for c in clean):
         return False
-    known = sum(1 for w in words if w in COMMON_DIALOGUE_WORDS)
-    if len(words) == 2:
-        return known >= 1 and any(ch in clean for ch in (".", "!", "?", "…", "▲", "▼", "◀", "▶"))
-    return (known / len(words)) >= 0.40
+    words = re.findall(r"[a-zA-Z]{2,}", clean.lower())
+    if not words:
+        return False
+    if len(words) == 1:
+        return _is_known_word(words[0]) and ("[BUF" in text or "[PLAYER]" in text) and any(ch in clean for ch in (".", "!", "?", "…"))
+    vowel_words = sum(1 for w in words if any(v in w for v in "aeiouy"))
+    if (vowel_words / len(words)) < 0.75:
+        return False
+    known = sum(1 for w in words if _is_known_word(w))
+    if len(words) <= 3:
+        return known >= 1 or any(ch in clean for ch in (".", "!", "?", "…", "▲", "▼", "◀", "▶"))
+    return (known / len(words)) >= 0.20
 
 
 def is_valid_name(s: str) -> bool:
@@ -188,7 +213,7 @@ class TableScanner:
 
         if include_dialogues:
             existing_offsets = {e.offset for e in entries}
-            entries.extend(self.scan_dialogues(limit=10000, exclude_offsets=existing_offsets))
+            entries.extend(self.scan_dialogues(limit=15000, exclude_offsets=existing_offsets))
 
         return entries
 
@@ -238,13 +263,21 @@ class TableScanner:
     def scan_pokemon_species(self) -> List[TextEntry]:
         entries = []
         stride = 11
+        name_len = 11
 
         # Check Title Case (Pokemon Gaia, Unbound) and ALL-CAPS (Vanilla)
         variants = [
             ["Bulbasaur", "Ivysaur", "Venusaur"],
             ["BULBASAUR", "IVYSAUR", "VENUSAUR"],
         ]
-        found = self._find_string_sequence(variants, stride)
+        found = None
+        for test_stride, test_name_len in [(11, 11), (288, 12)]:
+            found = self._find_string_sequence(variants, test_stride)
+            if found is not None:
+                stride = test_stride
+                name_len = test_name_len
+                break
+
         if found is not None:
             # Bulbasaur is species index 1 (index 0 is ?????????? / none)
             table_offset = found - stride
@@ -255,30 +288,41 @@ class TableScanner:
         else:
             table_offset = None
 
-        if table_offset is None or table_offset >= len(self.rom.data):
+        if table_offset is None or table_offset + stride * 2 >= len(self.rom.data):
+            return entries
+
+        # Verify that index 1 is actually Bulbasaur before scanning
+        first_check, _ = decode_gba_string(self.rom.data[table_offset + stride : table_offset + stride + name_len], use_kana=False)
+        if first_check.strip().upper() != "BULBASAUR":
             return entries
 
         idx = 0
         offset = table_offset
-        # In vanilla Emerald (and Blazed Glazed), species table ends at index 411 (Deoxys)
-        max_species = 411 if self.rom.is_emerald() else 1025
-        while idx <= max_species and offset + stride <= len(self.rom.data):
-            raw = self.rom.data[offset:offset + stride]
-            if raw == b"\xFF" * stride:
+        max_species = 1520 if stride == 288 else (411 if self.rom.is_emerald() else 1025)
+        consecutive_invalid = 0
+        while idx <= max_species and offset + name_len <= len(self.rom.data):
+            raw = self.rom.data[offset:offset + name_len]
+            if raw == b"\xFF" * name_len:
                 break
             text, _ = decode_gba_string(raw, use_kana=False)
             text = text.strip()
-            if text and not text.startswith("????"):
-                entries.append(TextEntry(
-                    entry_id=f"species_{idx}",
-                    category="species",
-                    offset=offset,
-                    length=stride,
-                    original_text=text,
-                    translated_text=auto_translate_text(text, "species") or "",
-                    max_length=stride,
-                    meta={"dex_number": idx},
-                ))
+            if idx > 0 and not is_valid_name(text):
+                consecutive_invalid += 1
+                if consecutive_invalid >= 5:
+                    break
+            else:
+                consecutive_invalid = 0
+                if text and not text.startswith("????") and text.upper() != "NONE":
+                    entries.append(TextEntry(
+                        entry_id=f"species_{idx}",
+                        category="species",
+                        offset=offset,
+                        length=name_len,
+                        original_text=text,
+                        translated_text=auto_translate_text(text, "species") or "",
+                        max_length=name_len,
+                        meta={"dex_number": idx},
+                    ))
             idx += 1
             offset += stride
 
@@ -308,7 +352,47 @@ class TableScanner:
         else:
             table_offset = None
 
-        if table_offset is None or table_offset >= len(self.rom.data):
+        if table_offset is not None and table_offset + stride * 2 <= len(self.rom.data):
+            first_check, _ = decode_gba_string(self.rom.data[table_offset + stride : table_offset + 2 * stride], use_kana=False)
+            if first_check.strip().upper() != "POUND":
+                table_offset = None
+
+        # Check pokeemerald-expansion gMovesInfo (72-byte struct with pointer to move name at +0)
+        if table_offset is None:
+            pound_enc = encode_gba_string("Pound", use_kana=False)
+            kchop_enc = encode_gba_string("Karate Chop", use_kana=False)
+            pos = 0
+            while True:
+                p_idx = self.rom.data.find(pound_enc, pos)
+                if p_idx == -1:
+                    break
+                for ptr_p in self.rom.find_all_pointers_to(p_idx):
+                    _, next_name_off = self.rom.read_ptr(ptr_p + 72)
+                    if next_name_off and self.rom.data.startswith(kchop_enc, next_name_off):
+                        # Found gMovesInfo struct table!
+                        struct_base = ptr_p - 72
+                        for m_idx in range(1, 950):
+                            m_ptr_off = struct_base + m_idx * 72
+                            if m_ptr_off + 72 > len(self.rom.data):
+                                break
+                            _, m_name_off = self.rom.read_ptr(m_ptr_off)
+                            if not m_name_off or m_name_off >= len(self.rom.data):
+                                continue
+                            m_text, m_consumed = decode_gba_string(self.rom.data, m_name_off, max_len=24, use_kana=False)
+                            m_text = m_text.strip()
+                            if m_text and is_valid_name(m_text) and m_text != "-":
+                                entries.append(TextEntry(
+                                    entry_id=f"move_{m_idx}",
+                                    category="moves",
+                                    offset=m_name_off,
+                                    length=m_consumed,
+                                    original_text=m_text,
+                                    translated_text=auto_translate_text(m_text, "moves") or "",
+                                    pointer_offsets=[m_ptr_off],
+                                    meta={"move_id": m_idx},
+                                ))
+                        return entries
+                pos = p_idx + 1
             return entries
 
         idx = 0
@@ -363,7 +447,53 @@ class TableScanner:
         else:
             table_offset = None
 
-        if table_offset is None or table_offset >= len(self.rom.data):
+        if table_offset is not None and table_offset + struct_size * 2 <= len(self.rom.data):
+            first_check, _ = decode_gba_string(self.rom.data[table_offset + struct_size : table_offset + struct_size + name_len], use_kana=False)
+            if first_check.strip().upper() != "MASTER BALL":
+                table_offset = None
+
+        # Check pokeemerald-expansion gItemsInfo (44-byte struct with pointer to item name at +0)
+        if table_offset is None:
+            mb_enc = encode_gba_string("Master Ball", use_kana=False)
+            ub_enc = encode_gba_string("Ultra Ball", use_kana=False)
+            pos = 0
+            while True:
+                mb_idx = self.rom.data.find(mb_enc, pos)
+                if mb_idx == -1:
+                    break
+                for ptr_mb in self.rom.find_all_pointers_to(mb_idx):
+                    for step in (44, -44):
+                        _, ub_off = self.rom.read_ptr(ptr_mb + step)
+                        if ub_off and self.rom.data.startswith(ub_enc, ub_off):
+                            # Walk backwards and forwards by 44 bytes to find start of gItemsInfo
+                            start_ptr = ptr_mb
+                            while start_ptr >= 44:
+                                _, prev_name = self.rom.read_ptr(start_ptr - 44)
+                                if not prev_name or prev_name < 0x100000 or prev_name >= len(self.rom.data):
+                                    break
+                                start_ptr -= 44
+                            for i_idx in range(850):
+                                cur_ptr = start_ptr + i_idx * 44
+                                if cur_ptr + 44 > len(self.rom.data):
+                                    break
+                                _, i_name_off = self.rom.read_ptr(cur_ptr)
+                                if not i_name_off or i_name_off < 0x100000 or i_name_off >= len(self.rom.data):
+                                    break
+                                i_text, i_consumed = decode_gba_string(self.rom.data, i_name_off, max_len=24, use_kana=False)
+                                i_text = i_text.strip()
+                                if i_text and is_valid_name(i_text) and not i_text.startswith("????"):
+                                    entries.append(TextEntry(
+                                        entry_id=f"item_{i_idx}",
+                                        category="items",
+                                        offset=i_name_off,
+                                        length=i_consumed,
+                                        original_text=i_text,
+                                        translated_text=auto_translate_text(i_text, "items") or "",
+                                        pointer_offsets=[cur_ptr],
+                                        meta={"item_id": i_idx},
+                                    ))
+                            return entries
+                pos = mb_idx + 1
             return entries
 
         idx = 0
@@ -476,33 +606,41 @@ class TableScanner:
             ["STENCH", "DRIZZLE", "SPEED BOOST"],
         ]
         stride = 13
+        name_len = 13
         table_offset = None
 
-        # Check CFRU 17-byte stride first, then standard 13-byte stride
-        for test_stride in [17, 13]:
+        # Check CFRU 17-byte stride, standard 13-byte stride, and pokeemerald-expansion 32-byte gAbilitiesInfo stride
+        for test_stride, test_name_len in [(17, 17), (13, 13), (32, 16)]:
             found = self._find_string_sequence(variants, test_stride)
             if found is not None:
                 table_offset = found - test_stride
                 stride = test_stride
+                name_len = test_name_len
                 break
 
         if table_offset is None:
             if self.rom.is_firered():
                 table_offset = 0x24FC40
                 stride = 13
+                name_len = 13
             elif self.rom.is_emerald():
                 table_offset = 0x31BC8E
                 stride = 13
+                name_len = 13
 
-        if table_offset is None or table_offset >= len(self.rom.data):
+        if table_offset is None or table_offset + stride * 2 >= len(self.rom.data):
+            return entries
+
+        first_check, _ = decode_gba_string(self.rom.data[table_offset + stride : table_offset + stride + name_len], use_kana=False)
+        if first_check.strip().upper() != "STENCH":
             return entries
 
         idx = 0
         offset = table_offset
         consecutive_invalid = 0
-        while idx < 320 and offset + stride <= len(self.rom.data):
-            raw = self.rom.data[offset:offset + stride]
-            if raw == b"\xFF" * stride or raw == b"\x00" * stride:
+        while idx < 320 and offset + name_len <= len(self.rom.data):
+            raw = self.rom.data[offset:offset + name_len]
+            if raw == b"\xFF" * name_len or raw == b"\x00" * name_len:
                 break
             text, _ = decode_gba_string(raw, use_kana=False)
             text = text.strip()
@@ -517,10 +655,10 @@ class TableScanner:
                         entry_id=f"ability_{idx}",
                         category="abilities",
                         offset=offset,
-                        length=stride,
+                        length=name_len,
                         original_text=text,
                         translated_text=auto_translate_text(text, "abilities") or "",
-                        max_length=stride,
+                        max_length=name_len,
                         meta={"ability_id": idx},
                     ))
             idx += 1
@@ -534,40 +672,51 @@ class TableScanner:
     def scan_types(self) -> List[TextEntry]:
         entries = []
         stride = 7
-        variants = [
+        name_len = 7
+        variants_7 = [
             ["Normal", "Fight", "Flying"],
             ["NORMAL", "FIGHT", "FLYING"],
         ]
-        found = self._find_string_sequence(variants, stride)
+        variants_40 = [
+            ["Normal", "Fighting", "Flying"],
+            ["NORMAL", "FIGHTING", "FLYING"],
+        ]
+        found = self._find_string_sequence(variants_7, 7)
         if found is not None:
             table_offset = found
-        elif self.rom.is_firered():
-            table_offset = 0x24F1A0
         else:
-            table_offset = None
+            found40 = self._find_string_sequence(variants_40, 40)
+            if found40 is not None:
+                table_offset = found40
+                stride = 40
+                name_len = 9
+            elif self.rom.is_firered():
+                table_offset = 0x24F1A0
+            else:
+                table_offset = None
 
-        if table_offset is None or table_offset >= len(self.rom.data):
+        if table_offset is None or table_offset + name_len >= len(self.rom.data):
             return entries
 
         idx = 0
         offset = table_offset
-        while idx < 19 and offset + stride <= len(self.rom.data):
-            raw = self.rom.data[offset:offset + stride]
-            if raw == b"\xFF" * stride or raw == b"\x00" * stride:
+        while idx < 22 and offset + name_len <= len(self.rom.data):
+            raw = self.rom.data[offset:offset + name_len]
+            if raw == b"\xFF" * name_len or raw == b"\x00" * name_len:
                 break
             text, _ = decode_gba_string(raw, use_kana=False)
             text = text.strip()
             if not is_valid_name(text):
                 break
-            if text:
+            if text and text.upper() != "NONE":
                 entries.append(TextEntry(
                     entry_id=f"type_{idx}",
                     category="types",
                     offset=offset,
-                    length=stride,
+                    length=name_len,
                     original_text=text,
                     translated_text=auto_translate_text(text, "types") or "",
-                    max_length=stride,
+                    max_length=name_len,
                     meta={"type_id": idx},
                 ))
             idx += 1
@@ -629,7 +778,7 @@ class TableScanner:
     # -----------------------------------------------------------------------
     # Dialogues and Scripts
     # -----------------------------------------------------------------------
-    def scan_dialogues(self, limit: int = 10000, exclude_offsets: Optional[set] = None) -> List[TextEntry]:
+    def scan_dialogues(self, limit: int = 15000, exclude_offsets: Optional[set] = None) -> List[TextEntry]:
         """Scans the ROM for authentic script dialogue strings referenced by 32-bit pointers
         (both 4-byte aligned C pointers and unaligned XSE/overworld event script pointers).
         Prioritizes custom ROM hack strings (>= 0x700000), C intro pointers, and core UI tables.
@@ -660,8 +809,13 @@ class TableScanner:
             first_byte = data[file_offset]
             if not (0xA1 <= first_byte <= 0xEE or first_byte in (0x00, 0x2D, 0x2E, 0xB0, 0xB3, 0xB4, 0xFC, 0xFD)):
                 continue
-            # Reject mid-word / mid-sentence false pointers (preceded by an ASCII letter/digit/punctuation)
-            if 0xA1 <= data[file_offset - 1] <= 0xEE:
+            # Reject mid-word / mid-sentence false pointers (preceded by an ASCII letter/digit/punctuation/newline/space)
+            prev = data[file_offset - 1]
+            if 0xA1 <= prev <= 0xEE or prev in (0xFA, 0xFB):
+                continue
+            if prev == 0xFE and file_offset % 4 != 0:
+                continue
+            if prev == 0x00 and (file_offset % 4 != 0 or (0xA1 <= data[file_offset - 2] <= 0xEE)):
                 continue
 
             term_idx = data.find(b"\xFF", file_offset, file_offset + 800)
@@ -678,10 +832,10 @@ class TableScanner:
                 by_term[term_idx] = (file_offset, p_offset, text, consumed)
 
         # Sort so custom ROM hack strings (>= 0x700000), C intro pointers (< 0x160000),
-        # and core UI/menu descriptions (0x416000..0x41A600) are always included first.
+        # and core UI/menu descriptions (0x3F0000..0x420000) are always included first.
         def _priority_key(item: Tuple[int, int, str, int]) -> Tuple[int, int]:
             file_offset, p_offset, _, _ = item
-            if file_offset >= 0x700000 or p_offset < 0x160000 or (0x416000 <= file_offset <= 0x41A600):
+            if file_offset >= 0x700000 or p_offset < 0x160000 or (0x3F0000 <= file_offset <= 0x420000):
                 return (0, file_offset)
             return (1, file_offset)
 
