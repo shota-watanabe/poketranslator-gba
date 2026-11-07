@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PokeTranslator GBA - 海外ポケモンROMハック日本語化スタジオ</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DotGothic16&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-brand">
+        <div class="brand-logo">
+          <span class="pokeball-icon">⚪</span>
+        </div>
+        <div class="brand-text">
+          <h1>PokeTranslator GBA</h1>
+          <span class="subtitle">海外ポケモンROMハック 日本語化スタジオ (M1 Mac対応)</span>
+        </div>
+      </div>
+      <div class="header-status" id="headerStatus">
+        <div class="status-badge waiting">
+          <span class="dot"></span>
+          <span id="statusText">ROM未読み込み</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Top Upload / Control Bar -->
+    <section class="toolbar">
+      <div class="file-upload-box" id="dropZone">
+        <input type="file" id="romFileInput" accept=".gba" style="display:none;">
+        <button class="btn btn-primary" id="btnSelectRom">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          GBA ROMを開く
+        </button>
+        <span class="drop-hint" id="dropHint">または .gba をドラッグ＆ドロップ</span>
+      </div>
+
+      <div class="sample-select-box" id="sampleSelectBox">
+        <span class="sample-label">📁 sample_dataから選択:</span>
+        <select id="sampleRomSelect" class="sample-dropdown">
+          <option value="">-- サンプルROMを選択 --</option>
+        </select>
+        <button class="btn btn-secondary" id="btnLoadSample">読み込む</button>
+      </div>
+
+      <div class="actions-group" id="actionsGroup" style="display:none;">
+        <button class="btn btn-success" id="btnAutoTranslate" title="辞書・正規化・説明文・機械翻訳で100%全自動翻訳">
+          🚀 100%全自動翻訳
+        </button>
+        <button class="btn btn-accent" id="btnExportRom">
+          📥 翻訳済みGBAを出力
+        </button>
+        <button class="btn btn-outline" id="btnExportIps">
+          📦 IPSパッチ出力
+        </button>
+      </div>
+    </section>
+
+    <!-- ROM Info Card (Visible after load) -->
+    <div class="rom-info-banner" id="romInfoBanner" style="display:none;">
+      <div class="info-item">
+        <span class="label">ファイル名</span>
+        <span class="value" id="infoFilename">-</span>
+      </div>
+      <div class="info-item">
+        <span class="label">ゲームタイトル</span>
+        <span class="value" id="infoTitle">-</span>
+      </div>
+      <div class="info-item">
+        <span class="label">ROMコード</span>
+        <span class="value code" id="infoCode">-</span>
+      </div>
+      <div class="info-item">
+        <span class="label">検出エンジン</span>
+        <span class="value highlight" id="infoEngine">-</span>
+      </div>
+      <div class="info-item progress-item">
+        <span class="label">翻訳進捗</span>
+        <div class="progress-container">
+          <div class="progress-bar" id="progressBar" style="width: 0%;"></div>
+        </div>
+        <span class="progress-text" id="progressText">0% (0 / 0)</span>
+      </div>
+    </div>
+
+    <!-- Main Workspace -->
+    <main class="main-content" id="mainContent" style="display:none;">
+      <!-- Left Panel: Table Editor -->
+      <section class="editor-panel">
+        <!-- Categories Tabs -->
+        <nav class="category-tabs" id="categoryTabs">
+          <button class="tab-btn active" data-category="all">すべて</button>
+          <button class="tab-btn" data-category="species">🐾 ポケモン</button>
+          <button class="tab-btn" data-category="moves">⚔️ わざ</button>
+          <button class="tab-btn" data-category="items">🎒 どうぐ</button>
+          <button class="tab-btn" data-category="abilities">⚡ とくせい</button>
+          <button class="tab-btn" data-category="types">🔥 タイプ</button>
+          <button class="tab-btn" data-category="menu">📜 メニュー</button>
+          <button class="tab-btn" data-category="dialogue">💬 セリフ</button>
+        </nav>
+
+        <!-- Search & Filter Controls -->
+        <div class="search-bar">
+          <div class="search-input-wrapper">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" id="searchInput" placeholder="英語名や翻訳テキストで検索...">
+          </div>
+          <div class="pagination-info" id="paginationInfo">0件</div>
+        </div>
+
+        <!-- Table View -->
+        <div class="table-container">
+          <table class="entries-table">
+            <thead>
+              <tr>
+                <th width="12%">区分</th>
+                <th width="38%">原文 (English)</th>
+                <th width="42%">日本語訳 (Japanese)</th>
+                <th width="8%">操作</th>
+              </tr>
+            </thead>
+            <tbody id="entriesTbody">
+              <!-- Dynamically populated -->
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Pagination Controls -->
+        <div class="pagination-controls">
+          <button class="btn btn-sm" id="btnPrevPage">◀ 前へ</button>
+          <span id="pageDisplay">Page 1 / 1</span>
+          <button class="btn btn-sm" id="btnNextPage">次へ ▶</button>
+        </div>
+      </section>
+
+      <!-- Right Panel: GBA Screen Preview & Settings -->
+      <aside class="sidebar-panel">
+        <!-- GBA Preview Box -->
+        <div class="card preview-card">
+          <div class="card-title">
+            <span>🎮 GBA実機プレビュー</span>
+            <span class="tag">240×160 GBA</span>
+          </div>
+          <div class="gba-screen">
+            <div class="gba-scenery"></div>
+            <div class="gba-textbox">
+              <div class="textbox-inner" id="previewText">
+                ポケモンの せかいへ ようこそ！<br>
+                ここでは えいごの セリフが<br>
+                にほんごで ひょうじ されます！
+              </div>
+              <div class="textbox-arrow">▼</div>
+            </div>
+          </div>
+          <div class="preview-hint">※ テキストボックスをクリックするとプレビューが更新されます</div>
+        </div>
+
+        <!-- Font Injection Settings -->
+        <div class="card font-card">
+          <div class="card-title">
+            <span>🔤 日本語フォント注入設定</span>
+          </div>
+          <div class="card-body">
+            <label class="toggle-control">
+              <input type="checkbox" id="chkPatchFont" checked>
+              <span class="toggle-slider"></span>
+              <span class="toggle-label">日本語カナフォントをROMに自動注入</span>
+            </label>
+            <p class="setting-desc">
+              海外版FireRed/Emerald ROM内のフォントテーブルに日本語グリフを直接書き込み、文字化けせず自然なカナ表示を可能にします。
+            </p>
+
+            <div class="setting-item">
+              <label for="charWidthRange">文字送り幅 (ピクセル): <span id="charWidthVal">9</span>px</label>
+              <input type="range" id="charWidthRange" min="7" max="12" value="9">
+            </div>
+
+            <button class="btn btn-outline btn-sm btn-block" id="btnToggleGlyphs">
+              注入フォント一覧を表示
+            </button>
+
+            <div class="glyph-preview-grid" id="glyphGrid" style="display:none;"></div>
+          </div>
+        </div>
+
+        <!-- Engine Help -->
+        <div class="card help-card">
+          <div class="card-title">💡 対応ROMハック</div>
+          <div class="card-body">
+            <ul class="support-list">
+              <li>✅ <strong>Pokémon Radical Red</strong> (CFRU)</li>
+              <li>✅ <strong>Pokémon Unbound</strong> (CFRU)</li>
+              <li>✅ <strong>Pokémon Inclement Emerald</strong></li>
+              <li>✅ <strong>Pokémon Gaia / Glazed / Emerald Seaglass</strong></li>
+              <li>✅ その他すべての標準FireRed/EmeraldベースROM</li>
+            </ul>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <!-- Welcome State (When no ROM is loaded) -->
+    <div class="welcome-container" id="welcomeContainer">
+      <div class="welcome-box">
+        <div class="welcome-icon">🎮</div>
+        <h2>海外ポケモンGBA ROMハックを日本語化</h2>
+        <p>
+          Radical RedやUnboundなどの人気海外ROMハックのメニュー・技名・アイテム名・セリフを<br>
+          日本語に翻訳し、日本語フォントを注入した完成版GBAファイルとしてエクスポートできます。
+        </p>
+        <div class="feature-tags">
+          <span class="tag">⚡ 第1〜9世代 公式辞書内蔵</span>
+          <span class="tag">🔤 8x12 GBAカナフォント自動注入</span>
+          <span class="tag">🛡️ 32MB自動拡張＆チェックサム自動修正</span>
+          <span class="tag">🍎 Apple Silicon (M1/M2/M3) 最適化</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Progress & ETA Modal Overlay -->
+  <div class="progress-modal-backdrop" id="progressModal" style="display: none;">
+    <div class="progress-modal-card">
+      <div class="modal-header">
+        <div class="modal-icon-wrapper">
+          <div class="spinner-pokeball"></div>
+        </div>
+        <div class="modal-title-box">
+          <h3 id="modalTaskTitle">処理を実行中</h3>
+          <p id="modalTaskDetail">準備しています...</p>
+        </div>
+      </div>
+
+      <!-- Main Progress Bar & Percentage -->
+      <div class="modal-progress-section">
+        <div class="modal-bar-header">
+          <span class="modal-progress-label" id="modalProgressStage">進行状況</span>
+          <span class="modal-progress-percent" id="modalProgressPercent">0%</span>
+        </div>
+        <div class="modal-progress-track">
+          <div class="modal-progress-fill" id="modalProgressFill" style="width: 0%;">
+            <div class="modal-progress-glow"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4 Stats Cards Grid (Items, Elapsed, ETA, Speed) -->
+      <div class="modal-stats-grid">
+        <div class="stat-card">
+          <div class="stat-label">処理項目 / サイズ</div>
+          <div class="stat-value" id="modalStatItems">0 / 0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">経過時間</div>
+          <div class="stat-value" id="modalStatElapsed">00:00</div>
+        </div>
+        <div class="stat-card highlight-card">
+          <div class="stat-label">見込み残り時間 (ETA)</div>
+          <div class="stat-value highlight" id="modalStatEta">計算中...</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">処理速度</div>
+          <div class="stat-value" id="modalStatSpeed">-</div>
+        </div>
+      </div>
+
+      <!-- Live status footer hint -->
+      <div class="modal-footer-hint">
+        <span class="pulse-dot"></span>
+        <span id="modalFooterMessage">Apple Silicon (M1 Mac) 最適化パイプラインで並列高速処理中...</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
